@@ -22,8 +22,8 @@
 
 // ===== סוגי האירועים שמשימת המסך מקבלת =====
 
-// הגיעה הודעה מבקר השלט
-#define EVT_MESSAGE    1
+// השחקנית לחצה על הכפתור בבקר השלט
+#define EVT_PRESS      1
 
 // הקשר נותק
 #define EVT_LINK_LOST  2
@@ -38,8 +38,11 @@ struct DisplayEvent {
   // סוג האירוע: אחד משלושת המספרים למעלה
   uint8_t type;
 
-  // ההודעה עצמה. בשימוש רק כשהסוג הוא EVT_MESSAGE
-  Message msg;
+  // ההודעה עצמה. בשימוש רק כשהסוג הוא EVT_PRESS
+  GameMsg msg;
+
+  // מתי ההודעה הגיעה, לפי millis(). נרשם מיד ב-onReceive, כדי שמדידת הזמן תהיה מדויקת
+  uint32_t rxTime;
 };
 
 
@@ -62,25 +65,34 @@ volatile bool everReceived = false;
 
 void onReceive(const esp_now_recv_info*mac, const uint8_t *data, int len) {
 
-  // בדיקת בטיחות: אם הגודל לא מתאים להודעה שלנו, מתעלמים
-  if (len != sizeof(Message)) {
+  // TODO 1: בדיקת בטיחות. אם הגודל לא מתאים להודעת המשחק, מתעלמים
+  //   רמז: איך קוראים לטופס החדש בקובץ המשותף?
+  if (len != sizeof(GameMsg)) {
     return;
   }
 
-  // ממלאים קופסה
-  DisplayEvent evt;
-  evt.type = EVT_MESSAGE;
-  memcpy(&evt.msg, data, sizeof(Message));
+  // מעתיקים את הבתים שהגיעו לטופס
+  GameMsg msg;
+  memcpy(&msg, data, sizeof(GameMsg));
 
-  // ליתר ביטחון: מוודאים שיש סימן סוף בטקסט
-  evt.msg.text[31] = '\0';
-
-  // רושמים מתי הגיעה ההודעה
+  // כל הודעה תקינה, מכל סוג, אומרת שהקשר חי
   lastRxTime = millis();
   everReceived = true;
 
-  // שמים בתור, ויוצאים מיד
-  xQueueSend(displayQueue, &evt, 0);
+  // TODO 2: אם זו הודעת לחיצה, שמים אותה בתור של המסך
+  //   רמז: איזו משבצת בטופס אומרת מה הסוג? ומה השם של סוג הלחיצה?
+  //   (הודעת "אני כאן" לא צריכה להגיע למסך. היא רק שומרת על הקשר, וזה כבר נעשה למעלה)
+  if (msg.type == Msg_Push) {
+    DisplayEvent evt;
+    evt.type   = EVT_PRESS;
+    evt.msg    = msg;
+
+    
+    evt.rxTime = millis();
+
+    // שמים בתור, ויוצאים מיד
+    xQueueSend(displayQueue, &evt, 0);
+  }
 }
 
 
@@ -105,28 +117,22 @@ void drawLinkStatus(bool ok) {
   tft.print(ok ? "LINK" : "LOST");
 }
 
-// מציירת הודעה שהתקבלה, באזור האמצעי של המסך
-void drawMessage(const Message &msg) {
+// מציירת לחיצה שהתקבלה, באזור האמצעי של המסך (זמני, עד שתהיה מכונת המצבים)
+void drawPress(const GameMsg &msg) {
 
-  // מוחקים את אזור ההודעה הקודמת
+  // מוחקים את האזור הקודם
   tft.fillRect(0, 50, 172, 150, ST77XX_BLACK);
 
-  // כותרת קטנה
-  tft.setTextSize(2);
-  tft.setTextColor(ST77XX_WHITE);
-  tft.setCursor(10, 60);
-  tft.print("Received:");
-
-  // הטקסט עצמו, גדול ובצהוב
+  // המילה PRESS, גדולה ובצהוב
   tft.setTextSize(3);
   tft.setTextColor(ST77XX_YELLOW);
-  tft.setCursor(10, 100);
-  tft.print(msg.text);
+  tft.setCursor(10, 80);
+  tft.print("PRESS!");
 
   // מספר הרצף, בתכלת
   tft.setTextSize(2);
   tft.setTextColor(ST77XX_CYAN);
-  tft.setCursor(10, 150);
+  tft.setCursor(10, 140);
   tft.printf("seq: %lu", (unsigned long)msg.seq);
 }
 
@@ -143,9 +149,9 @@ void displayTask(void *p) {
     xQueueReceive(displayQueue, &evt, portMAX_DELAY);
 
     // מחליטה מה לצייר לפי סוג האירוע
-    if (evt.type == EVT_MESSAGE) {
-      drawMessage(evt.msg);
-      Serial.printf("Got #%lu: %s\n", (unsigned long)evt.msg.seq, evt.msg.text);
+    if (evt.type == EVT_PRESS) {
+      drawPress(evt.msg);
+      Serial.printf("Press #%lu at %lu ms\n", (unsigned long)evt.msg.seq, (unsigned long)evt.rxTime);
     }
     else if (evt.type == EVT_LINK_OK) {
       drawLinkStatus(true);
@@ -197,6 +203,9 @@ void linkMonitorTask(void *p) {
 
 void setup() {
   Serial.begin(115200);
+
+  // אם אף אחד לא קורא את ההדפסות במחשב, לא מחכים: פשוט מוותרים עליהן
+  Serial.setTxTimeoutMs(0);
 
   // --- המסך ---
 

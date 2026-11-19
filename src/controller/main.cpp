@@ -3,35 +3,60 @@
 #include <esp_now.h>
 #include "shared.h"
 
-// מונה ההודעות: מתחיל מאפס, ועולה בכל שליחה
 uint32_t seq = 0;
-// ===== הכפתור =====
+// ===== הדופק =====
+
+#define HEARTBEAT_MS 1000        
+uint32_t lastHeartbeatTime = 0;  
 
 #define BUTTON_PIN  0     // כפתור BOOT
 #define DEBOUNCE_MS 30    // כמה זמן הקריאה צריכה להיות יציבה
-
-// TODO 1: מה הערך ההתחלתי של שלושת המשתנים?
-//   רמז: כשמדליקים את הבקר, הכפתור משוחרר. ומה קוראים כשהוא משוחרר?
-//   (בשעה, שימי פשוט 0)
 int      lastReading    = HIGH;   // הקריאה בסיבוב הקודם
 uint32_t lastChangeTime = 0;   // מתי הקריאה השתנתה לאחרונה
 int      stableState    = HIGH;   // המצב היציב שהחלטנו עליו
 
+
+
+// כמה שליחות נכשלו מאז ההדלקה. onSent כותבת, הלולאה קוראת ומדפיסה
+volatile uint32_t sendFails = 0;
+uint32_t printedFails = 0;   // כמה כישלונות כבר הדפסנו
+
 // ===== onSent: ESP-NOW קורא לה אחרי כל שליחה =====
+// רצה מתוך משימת הרדיו, ולכן חייבת להיות מהירה: רק סופרת, ולא מדפיסה
 
 void onSent(const wifi_tx_info_t *mac, esp_now_send_status_t status) {
-  if (status == ESP_NOW_SEND_SUCCESS) {
-    Serial.println("  -> Delivered");
-  } else {
-    Serial.println("  -> Delivery FAILED");
+  if (status != ESP_NOW_SEND_SUCCESS) {
+    sendFails++;
   }
 }
+// ===== sendMsg: בונה הודעת משחק ושולחת לבקר המסך =====
 
+void sendMsg(uint8_t type) {
+
+  // טופס ריק, מאופס
+  GameMsg msg = {};
+
+  // TODO 1: מלאי את שתי המשבצות של הטופס
+  //   רמז: את הסוג קיבלנו בפרמטר. ואת המונה כבר יש לנו, משתנה גלובלי
+  msg.type = type;
+  msg.seq  =seq ;
+
+  // TODO 2: שולחים. כמה בתים לשלוח?
+  //   רמז: תסתכלי איך עשו את זה בלולאה הישנה
+  esp_now_send(DISPLAY_MAC, (const uint8_t *)&msg, sizeof(msg));
+
+  // מגדילים את המונה להודעה הבאה
+  seq++;
+}
 
 // ===== שלב ההתחלה =====
 
 void setup() {
   Serial.begin(115200);
+
+  // אם אף אחד לא קורא את ההדפסות במחשב, לא מחכים: פשוט מוותרים עליהן
+  Serial.setTxTimeoutMs(0);
+
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   // 1. מדליקים את הרדיו במצב תחנה
   WiFi.mode(WIFI_STA);
@@ -58,7 +83,7 @@ void setup() {
 
   Serial.println("Controller ready");
 }
-// ===== הלולאה: בודקת את הכפתור כל הזמן =====
+
 
 void loop() {
 
@@ -66,8 +91,7 @@ void loop() {
   // TODO 3: איזו פונקציה קוראת את מצב הרגל?
   int reading =digitalRead (BUTTON_PIN) ;
 
-  // 2. אם הקריאה השתנתה מהסיבוב הקודם, שומרים את השעה
-  // TODO 4: מה התנאי? רמז: משווים בין שני משתנים
+  
   if (reading != lastReading ) {
     // TODO 5: איזו פונקציה נותנת את השעה עכשיו?
     lastChangeTime = millis();
@@ -81,12 +105,28 @@ void loop() {
     // TODO 6: מה התנאי? רמז: פעיל בנמוך
     if (stableState==LOW) {
       Serial.println("PRESSED");
+  sendMsg(Msg_Push);
     }
   }
+lastReading = reading;
 
-  // 5. זוכרים את הקריאה, לסיבוב הבא
-  lastReading = reading;
+  // 🆕 6. הדופק: אם עברה שנייה מאז "אני כאן" האחרון, שולחים שוב
+  // TODO 4: מה התנאי?
+  if (millis() - lastHeartbeatTime >HEARTBEAT_MS) {
+    sendMsg(Msg_Im_here);
+    // TODO 5: שלחי הודעת "אני כאן"
+    
+    // TODO 6: שמרי את השעה של השליחה
+    lastHeartbeatTime = millis();
+
+    // מדפיסים רק אם היו כישלונות חדשים מאז הפעם הקודמת
+    if (sendFails != printedFails) {
+      printedFails = sendFails;
+      Serial.printf("Send failures so far: %lu\n", (unsigned long)printedFails);
+    }
+  }
 }
+
 
 
 
