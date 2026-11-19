@@ -19,3 +19,17 @@ struct Message {
   // הטקסט, עד 31 תווים ועוד סימן סוף
   char text[32];
 };
+// ===== סוגי ההודעות של המשחק =====
+
+ enum MsgType : uint8_t {
+  Msg_Im_here=1,
+  Msg_Push= 2,
+ };
+    
+
+// ===== מבנה הודעת המשחק =====
+
+struct GameMsg {
+  uint8_t type;  
+  uint32_t seq; 
+};
