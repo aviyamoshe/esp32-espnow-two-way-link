@@ -5,7 +5,17 @@
 
 // מונה ההודעות: מתחיל מאפס, ועולה בכל שליחה
 uint32_t seq = 0;
+// ===== הכפתור =====
 
+#define BUTTON_PIN  0     // כפתור BOOT
+#define DEBOUNCE_MS 30    // כמה זמן הקריאה צריכה להיות יציבה
+
+// TODO 1: מה הערך ההתחלתי של שלושת המשתנים?
+//   רמז: כשמדליקים את הבקר, הכפתור משוחרר. ומה קוראים כשהוא משוחרר?
+//   (בשעה, שימי פשוט 0)
+int      lastReading    = HIGH;   // הקריאה בסיבוב הקודם
+uint32_t lastChangeTime = 0;   // מתי הקריאה השתנתה לאחרונה
+int      stableState    = HIGH;   // המצב היציב שהחלטנו עליו
 
 // ===== onSent: ESP-NOW קורא לה אחרי כל שליחה =====
 
@@ -22,7 +32,7 @@ void onSent(const wifi_tx_info_t *mac, esp_now_send_status_t status) {
 
 void setup() {
   Serial.begin(115200);
-
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
   // 1. מדליקים את הרדיו במצב תחנה
   WiFi.mode(WIFI_STA);
 
@@ -48,24 +58,35 @@ void setup() {
 
   Serial.println("Controller ready");
 }
-
-
-// ===== הלולאה: שולחת הודעה כל שנייה =====
+// ===== הלולאה: בודקת את הכפתור כל הזמן =====
 
 void loop() {
 
-  // ממלאים כרטיס הודעה חדש
-  Message msg;
-  msg.seq = seq;
-  strcpy(msg.text, "hello");
+  // 1. קוראים את הכפתור עכשיו
+  // TODO 3: איזו פונקציה קוראת את מצב הרגל?
+  int reading =digitalRead (BUTTON_PIN) ;
 
-  // שולחים את כל הכרטיס לבקר המסך
-  esp_now_send(DISPLAY_MAC, (const uint8_t *)&msg, sizeof(msg));
+  // 2. אם הקריאה השתנתה מהסיבוב הקודם, שומרים את השעה
+  // TODO 4: מה התנאי? רמז: משווים בין שני משתנים
+  if (reading != lastReading ) {
+    // TODO 5: איזו פונקציה נותנת את השעה עכשיו?
+    lastChangeTime = millis();
+  }
 
-  Serial.printf("Sent #%lu\n", (unsigned long)msg.seq);
+  // 3. אם הקריאה יציבה כבר 30 אלפיות שנייה, והיא שונה מהמצב היציב
+  if (millis() - lastChangeTime >= DEBOUNCE_MS && reading != stableState) {
+    stableState = reading;
 
-  // מגדילים את המונה להודעה הבאה
-  seq++;
+    // 4. אם המצב היציב החדש הוא "לחוץ", זו לחיצה!
+    // TODO 6: מה התנאי? רמז: פעיל בנמוך
+    if (stableState==LOW) {
+      Serial.println("PRESSED");
+    }
+  }
 
-  delay(1000);
+  // 5. זוכרים את הקריאה, לסיבוב הבא
+  lastReading = reading;
 }
+
+
+
