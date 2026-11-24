@@ -10,9 +10,10 @@
 uint32_t seq = 0;
 uint32_t lastHeartbeatTime = 0;
 
-int lastReading = HIGH;      // הקריאה בסיבוב בהתחלה
-uint32_t lastChangeTime = 0; // מתי הקריאה השתנתה לאחרונה
-int stableState = HIGH;      // המצב היציב והראשוני
+// Button debounce (active low, INPUT_PULLUP)
+int lastReading = HIGH;       // raw reading from the previous loop
+uint32_t lastChangeTime = 0;  // when the raw reading last changed
+int stableState = HIGH;       // debounced state
 
 volatile uint32_t sendFails = 0;
 uint32_t printedFails = 0;
@@ -40,7 +41,7 @@ void setup() {
   }
   esp_now_register_send_cb(onSent);
 
-  //  רושמים את בקר המסך כשותף
+  // Register the display board as a peer
   esp_now_peer_info_t peer = {};
   memcpy(peer.peer_addr, DISPLAY_MAC, 6);
   peer.channel = 0;

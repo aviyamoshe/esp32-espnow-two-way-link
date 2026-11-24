@@ -30,12 +30,14 @@ QueueHandle_t displayQueue;
 volatile uint32_t lastRxTime = 0;
 volatile bool everReceived = false;
 
-enum GameState : uint8_t { //מצבי המשחק תכנון MOORE// המצב אף פעם לא יוצא מהבקר הזה לכן אין צורך במספרים מפורשים כמו שעשיתי בMSG_TYPE
-  STATE_WAITING,   // waiting for the player to start
-  STATE_GET_READY, // random timing until the player need to push the buttom
-  STATE_NOW,       // green screen, press now
-  STATE_TOO_EARLY, // pressed before green,comeback to the start
-  STATE_RESULT     // show reaction time
+// Game states (Moore machine). The state never leaves this board,
+// so unlike MsgType it needs no explicit values
+enum GameState : uint8_t {
+  STATE_WAITING,    // waiting for the player to start
+  STATE_GET_READY,  // red screen, random wait before green
+  STATE_NOW,        // green screen, press now
+  STATE_TOO_EARLY,  // pressed before green
+  STATE_RESULT      // show the reaction time and the best time
 };
 GameState state = STATE_WAITING;
 uint32_t lastReactionMs = 0;
@@ -49,7 +51,7 @@ void onReceive(const esp_now_recv_info *mac, const uint8_t *data, int len) {
   lastRxTime = millis();
   everReceived = true;
 
-  if (msg.type == Msg_Push) { // בדיקה של סוג ההודעה
+  if (msg.type == Msg_Push) {  // only presses go to the game; every message keeps the link alive
     DisplayEvent evt;
     evt.type = EVT_PRESS;
     evt.msg = msg;
@@ -125,7 +127,8 @@ void drawState(GameState s) {
   }
 }
 
-void setState(GameState newState) { // קובעת את המצב החדש בSTATE בכל פעם
+// Moves to a new state and redraws the screen for it
+void setState(GameState newState) {
   state = newState;
   drawState(state);
   Serial.printf("State -> %d\n", (int)state);
@@ -138,8 +141,9 @@ void setState(GameState newState) { // קובעת את המצב החדש בSTATE
 uint32_t deadlineMs = 0;
 uint32_t greenAtMs = 0;
 
+// Starts a new round: the red screen stays for a random time, then turns green
 void startRound() {
-  deadlineMs = millis() + random(MIN_WAIT_MS, MAX_WAIT_MS); // זמן המעבר למסך הירוק והמסך האדום יהיה מרגע מעבר למסך האדום פלוס זמן רנדומלי בין הגבולות שהגדרתי
+  deadlineMs = millis() + random(MIN_WAIT_MS, MAX_WAIT_MS);
   setState(STATE_GET_READY);
 }
 
@@ -167,19 +171,18 @@ void displayTask(void *p) {
         break;
 
       case STATE_GET_READY:
-        if (pressed) { // אם יש לחיצה ואנחנו במצב של המסך האדום הלחיצה קרתה מוקדם מדי
-          setState(STATE_TOO_EARLY);
-        }
+        if (pressed) setState(STATE_TOO_EARLY);  // pressed while still red
         if (timeUp) {
           setState(STATE_NOW);
-          greenAtMs = millis();
-          deadlineMs = millis() + NOW_TIMEOUT_MS; // כשהמסך עובר לירוק יש זמן של 3 שניות לשחקנית ללחוץ לכן בכל פעם שעובר לירוק נגדיר את הזמן ועוד 3 שניות  שהגדרנו לחכות לזמן לחיצה כשהמסך ירוק
+          greenAtMs = millis();                     // after drawing: the moment the player sees green
+          deadlineMs = millis() + NOW_TIMEOUT_MS;   // the player has NOW_TIMEOUT_MS to press
         }
         break;
 
       case STATE_NOW:
         if (pressed) {
-          lastReactionMs = evt.rxTime - greenAtMs; // זמן הקבלה לתור של פונקצית ONRECIEVE מוגדר  ולכן זמן התגובה יהיה הזמן המוגדר ברגע שהתקבלה ההודעה ונכנסה לתור פחות הזמן בו המסך עבר לירוק
+          // Reaction time: when the press arrived (stamped in onReceive), minus when the screen turned green
+          lastReactionMs = evt.rxTime - greenAtMs;
           if (lastReactionMs < bestReactionMs || bestReactionMs == 0) {
             bestReactionMs = lastReactionMs;
           }
