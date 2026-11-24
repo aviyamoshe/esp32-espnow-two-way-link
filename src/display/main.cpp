@@ -6,9 +6,6 @@
 #include <Adafruit_ST7789.h>
 #include "shared.h"
 
-
-// ===== הרגליים של המסך =====
-
 #define LCD_MOSI 45
 #define LCD_SCLK 40
 #define LCD_CS   42
@@ -16,243 +13,239 @@
 #define LCD_RST  39
 #define LCD_BL   48
 
-// כמה זמן של שקט נחשב לניתוק, באלפיות שנייה
 #define LINK_TIMEOUT_MS 3000
 
-
-// ===== סוגי האירועים שמשימת המסך מקבלת =====
-
-// השחקנית לחצה על הכפתור בבקר השלט
-#define EVT_PRESS      1
-
-// הקשר נותק
-#define EVT_LINK_LOST  2
-
-// הקשר תקין
-#define EVT_LINK_OK    3
-
-
-// ===== הקופסה שנכנסת לתור של המסך =====
+#define EVT_PRESS     1
+#define EVT_LINK_LOST 2
+#define EVT_LINK_OK   3
 
 struct DisplayEvent {
-  // סוג האירוע: אחד משלושת המספרים למעלה
   uint8_t type;
-
-  // ההודעה עצמה. בשימוש רק כשהסוג הוא EVT_PRESS
   GameMsg msg;
-
-  // מתי ההודעה הגיעה, לפי millis(). נרשם מיד ב-onReceive, כדי שמדידת הזמן תהיה מדויקת
   uint32_t rxTime;
 };
 
-
-// ===== משתנים גלובליים =====
-
-// המסך
 Adafruit_ST7789 tft = Adafruit_ST7789(&SPI, LCD_CS, LCD_DC, LCD_RST);
-
-// התור של המסך
 QueueHandle_t displayQueue;
-
-// מתי הגיעה ההודעה האחרונה
 volatile uint32_t lastRxTime = 0;
-
-// האם הגיעה בכלל הודעה מאז ההדלקה
 volatile bool everReceived = false;
 
+enum GameState : uint8_t { //מצבי המשחק תכנון MOORE// המצב אף פעם לא יוצא מהבקר הזה לכן אין צורך במספרים מפורשים כמו שעשיתי בMSG_TYPE
+  STATE_WAITING,   // waiting for the player to start
+  STATE_GET_READY, // random timing until the player need to push the buttom
+  STATE_NOW,       // green screen, press now
+  STATE_TOO_EARLY, // pressed before green,comeback to the start
+  STATE_RESULT     // show reaction time
+};
+GameState state = STATE_WAITING;
+uint32_t lastReactionMs = 0;
+uint32_t bestReactionMs = 0;
 
-// ===== onReceive: ESP-NOW קורא לה כשמגיעה הודעה =====
+void onReceive(const esp_now_recv_info *mac, const uint8_t *data, int len) {
+  if (len != sizeof(GameMsg)) return;
 
-void onReceive(const esp_now_recv_info*mac, const uint8_t *data, int len) {
-
-  // TODO 1: בדיקת בטיחות. אם הגודל לא מתאים להודעת המשחק, מתעלמים
-  //   רמז: איך קוראים לטופס החדש בקובץ המשותף?
-  if (len != sizeof(GameMsg)) {
-    return;
-  }
-
-  // מעתיקים את הבתים שהגיעו לטופס
   GameMsg msg;
   memcpy(&msg, data, sizeof(GameMsg));
-
-  // כל הודעה תקינה, מכל סוג, אומרת שהקשר חי
   lastRxTime = millis();
   everReceived = true;
 
-  // TODO 2: אם זו הודעת לחיצה, שמים אותה בתור של המסך
-  //   רמז: איזו משבצת בטופס אומרת מה הסוג? ומה השם של סוג הלחיצה?
-  //   (הודעת "אני כאן" לא צריכה להגיע למסך. היא רק שומרת על הקשר, וזה כבר נעשה למעלה)
-  if (msg.type == Msg_Push) {
+  if (msg.type == Msg_Push) { // בדיקה של סוג ההודעה
     DisplayEvent evt;
-    evt.type   = EVT_PRESS;
-    evt.msg    = msg;
-
-    
+    evt.type = EVT_PRESS;
+    evt.msg = msg;
     evt.rxTime = millis();
-
-    // שמים בתור, ויוצאים מיד
     xQueueSend(displayQueue, &evt, 0);
   }
 }
 
-
-// ===== פונקציות ציור: רק משימת המסך קוראת להן =====
-
-// מציירת את נקודת מצב הקשר בפינה הימנית העליונה
 void drawLinkStatus(bool ok) {
-
-  // מוחקים את האזור הקודם
-  tft.fillRect(95, 5, 77, 25, ST77XX_BLACK);
-
-  // בוחרים צבע לפי המצב
   uint16_t color = ok ? ST77XX_GREEN : ST77XX_RED;
-
-  // הנקודה
+  tft.fillRect(95, 5, 77, 25, ST77XX_BLACK);
   tft.fillCircle(160, 17, 8, color);
-
-  // המילה ליד הנקודה
   tft.setTextSize(1);
   tft.setTextColor(color);
   tft.setCursor(115, 14);
   tft.print(ok ? "LINK" : "LOST");
 }
 
-// מציירת לחיצה שהתקבלה, באזור האמצעי של המסך (זמני, עד שתהיה מכונת המצבים)
-void drawPress(const GameMsg &msg) {
+#define GAME_TOP 40
+#define SCREEN_W 172
+#define SCREEN_H 320
 
-  // מוחקים את האזור הקודם
-  tft.fillRect(0, 50, 172, 150, ST77XX_BLACK);
-
-  // המילה PRESS, גדולה ובצהוב
-  tft.setTextSize(3);
-  tft.setTextColor(ST77XX_YELLOW);
-  tft.setCursor(10, 80);
-  tft.print("PRESS!");
-
-  // מספר הרצף, בתכלת
-  tft.setTextSize(2);
-  tft.setTextColor(ST77XX_CYAN);
-  tft.setCursor(10, 140);
-  tft.printf("seq: %lu", (unsigned long)msg.seq);
+void drawCentered(const char *text, int y, uint8_t size, uint16_t color) {
+  int16_t x1, y1;
+  uint16_t w, h;
+  tft.setTextSize(size);
+  tft.getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
+  tft.setTextColor(color);
+  tft.setCursor((SCREEN_W - w) / 2, y);
+  tft.print(text);
 }
 
+void drawState(GameState s) {
+  char line[24];
+  switch (s) {
+    case STATE_WAITING:
+      tft.fillRect(0, GAME_TOP, SCREEN_W, SCREEN_H - GAME_TOP, ST77XX_BLACK);
+      drawCentered("REACTION", 110, 3, ST77XX_CYAN);
+      drawCentered("GAME", 145, 3, ST77XX_CYAN);
+      drawCentered("PRESS TO", 220, 2, ST77XX_WHITE);
+      drawCentered("START", 245, 2, ST77XX_WHITE);
+      break;
 
-// ===== משימת המסך: עדיפות 2 =====
+    case STATE_GET_READY:
+      tft.fillRect(0, GAME_TOP, SCREEN_W, SCREEN_H - GAME_TOP, ST77XX_RED);
+      drawCentered("GET", 150, 3, ST77XX_WHITE);
+      drawCentered("READY", 185, 3, ST77XX_WHITE);
+      break;
+
+    case STATE_NOW:
+      tft.fillRect(0, GAME_TOP, SCREEN_W, SCREEN_H - GAME_TOP, ST77XX_GREEN);
+      drawCentered("NOW!", 160, 4, ST77XX_BLACK);
+      break;
+
+    case STATE_TOO_EARLY:
+      tft.fillRect(0, GAME_TOP, SCREEN_W, SCREEN_H - GAME_TOP, ST77XX_ORANGE);
+      drawCentered("TOO", 140, 3, ST77XX_BLACK);
+      drawCentered("EARLY!", 175, 3, ST77XX_BLACK);
+      drawCentered("PRESS TO RETRY", 250, 1, ST77XX_BLACK);
+      break;
+
+    case STATE_RESULT:
+      tft.fillRect(0, GAME_TOP, SCREEN_W, SCREEN_H - GAME_TOP, ST77XX_BLACK);
+      drawCentered("YOUR TIME", 90, 2, ST77XX_WHITE);
+      snprintf(line, sizeof(line), "%lu ms", (unsigned long)lastReactionMs);
+      drawCentered(line, 125, 3, ST77XX_YELLOW);
+      if (bestReactionMs > 0) {
+        snprintf(line, sizeof(line), "BEST: %lu ms", (unsigned long)bestReactionMs);
+        drawCentered(line, 190, 2, ST77XX_CYAN);
+      }
+      drawCentered("PRESS TO PLAY AGAIN", 260, 1, ST77XX_WHITE);
+      break;
+  }
+}
+
+void setState(GameState newState) { // קובעת את המצב החדש בSTATE בכל פעם
+  state = newState;
+  drawState(state);
+  Serial.printf("State -> %d\n", (int)state);
+}
+
+#define MIN_WAIT_MS    2000
+#define MAX_WAIT_MS    5000
+#define NOW_TIMEOUT_MS 3000
+
+uint32_t deadlineMs = 0;
+uint32_t greenAtMs = 0;
+
+void startRound() {
+  deadlineMs = millis() + random(MIN_WAIT_MS, MAX_WAIT_MS); // זמן המעבר למסך הירוק והמסך האדום יהיה מרגע מעבר למסך האדום פלוס זמן רנדומלי בין הגבולות שהגדרתי
+  setState(STATE_GET_READY);
+}
 
 void displayTask(void *p) {
-
   DisplayEvent evt;
+  drawState(state);
 
   while (true) {
-
-    // ישנה עד שמגיעה קופסה
-    xQueueReceive(displayQueue, &evt, portMAX_DELAY);
-
-    // מחליטה מה לצייר לפי סוג האירוע
-    if (evt.type == EVT_PRESS) {
-      drawPress(evt.msg);
-      Serial.printf("Press #%lu at %lu ms\n", (unsigned long)evt.msg.seq, (unsigned long)evt.rxTime);
+    TickType_t wait = portMAX_DELAY;
+    if (state == STATE_GET_READY || state == STATE_NOW) {
+      int32_t left = (int32_t)(deadlineMs - millis());
+      wait = (left > 0) ? pdMS_TO_TICKS(left) : 0;
     }
-    else if (evt.type == EVT_LINK_OK) {
-      drawLinkStatus(true);
-      Serial.println("Link OK");
-    }
-    else if (evt.type == EVT_LINK_LOST) {
-      drawLinkStatus(false);
-      Serial.println("Link LOST");
+
+    bool got = (xQueueReceive(displayQueue, &evt, wait) == pdTRUE);
+    if (got && evt.type == EVT_LINK_OK)   { drawLinkStatus(true);  continue; }
+    if (got && evt.type == EVT_LINK_LOST) { drawLinkStatus(false); continue; }
+
+    bool pressed = got && evt.type == EVT_PRESS;
+    bool timeUp = !got;
+
+    switch (state) {
+      case STATE_WAITING:
+        if (pressed) startRound();
+        break;
+
+      case STATE_GET_READY:
+        if (pressed) { // אם יש לחיצה ואנחנו במצב של המסך האדום הלחיצה קרתה מוקדם מדי
+          setState(STATE_TOO_EARLY);
+        }
+        if (timeUp) {
+          setState(STATE_NOW);
+          greenAtMs = millis();
+          deadlineMs = millis() + NOW_TIMEOUT_MS; // כשהמסך עובר לירוק יש זמן של 3 שניות לשחקנית ללחוץ לכן בכל פעם שעובר לירוק נגדיר את הזמן ועוד 3 שניות  שהגדרנו לחכות לזמן לחיצה כשהמסך ירוק
+        }
+        break;
+
+      case STATE_NOW:
+        if (pressed) {
+          lastReactionMs = evt.rxTime - greenAtMs; // זמן הקבלה לתור של פונקצית ONRECIEVE מוגדר  ולכן זמן התגובה יהיה הזמן המוגדר ברגע שהתקבלה ההודעה ונכנסה לתור פחות הזמן בו המסך עבר לירוק
+          if (lastReactionMs < bestReactionMs || bestReactionMs == 0) {
+            bestReactionMs = lastReactionMs;
+          }
+          setState(STATE_RESULT);
+        }
+        if (timeUp) startRound();
+        break;
+
+      case STATE_TOO_EARLY:
+        if (pressed) startRound();
+        break;
+
+      case STATE_RESULT:
+        if (pressed) setState(STATE_WAITING);
+        break;
     }
   }
 }
 
-
-// ===== משימת שומר הקשר: עדיפות 1 =====
-
 void linkMonitorTask(void *p) {
-
-  // בהתחלה אין קשר, עד שתגיע הודעה ראשונה
   bool linkOk = false;
 
   while (true) {
-
-    // הקשר תקין אם הגיעה הודעה, והאחרונה הגיעה לפני פחות מ-3 שניות
     bool alive = everReceived && (millis() - lastRxTime <= LINK_TIMEOUT_MS);
 
-    // הקשר חזר: מודיעים למסך פעם אחת
-    if (alive && !linkOk) {
+    if (alive != linkOk) {
+      linkOk = alive;
       DisplayEvent evt;
-      evt.type = EVT_LINK_OK;
+      evt.type = linkOk ? EVT_LINK_OK : EVT_LINK_LOST;
       xQueueSend(displayQueue, &evt, 0);
-      linkOk = true;
     }
 
-    // הקשר נותק: מודיעים למסך פעם אחת
-    if (!alive && linkOk) {
-      DisplayEvent evt;
-      evt.type = EVT_LINK_LOST;
-      xQueueSend(displayQueue, &evt, 0);
-      linkOk = false;
-    }
-
-    // ישנה חצי שנייה
     vTaskDelay(pdMS_TO_TICKS(500));
   }
 }
 
-
-// ===== שלב ההתחלה =====
-
 void setup() {
   Serial.begin(115200);
-
-  // אם אף אחד לא קורא את ההדפסות במחשב, לא מחכים: פשוט מוותרים עליהן
   Serial.setTxTimeoutMs(0);
 
-  // --- המסך ---
-
-  // מדליקים את התאורה האחורית
   pinMode(LCD_BL, OUTPUT);
   digitalWrite(LCD_BL, HIGH);
-
-  // מפעילים את התקשורת עם המסך, ומאתחלים אותו
   SPI.begin(LCD_SCLK, -1, LCD_MOSI, LCD_CS);
   tft.init(172, 320);
   tft.fillScreen(ST77XX_BLACK);
 
-  // כותרת קבועה למעלה
   tft.setTextSize(2);
   tft.setTextColor(ST77XX_WHITE);
   tft.setCursor(5, 10);
   tft.print("ESP-NOW");
-
-  // בהתחלה: אין קשר
   drawLinkStatus(false);
 
-  // --- התור: חייב להיווצר לפני ש-onReceive נרשמת ---
   displayQueue = xQueueCreate(10, sizeof(DisplayEvent));
 
-  // --- ESP-NOW ---
-
-  // מדליקים את הרדיו
   WiFi.mode(WIFI_STA);
-
-  // מפעילים את ESP-NOW
   if (esp_now_init() != ESP_OK) {
     Serial.println("ESP-NOW init FAILED");
     return;
   }
-
-  // רושמים את onReceive
   esp_now_register_recv_cb(onReceive);
 
-  // --- המשימות ---
   xTaskCreate(displayTask,     "Display", 8192, NULL, 2, NULL);
   xTaskCreate(linkMonitorTask, "LinkMon", 4096, NULL, 1, NULL);
 
   Serial.println("Display ready");
 }
-
-
-// ===== הלולאה הראשית: לא עושה כלום =====
 
 void loop() {
   vTaskDelay(portMAX_DELAY);
